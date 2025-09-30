@@ -1,0 +1,317 @@
+@startuml Payment Saga BPMN Process
+!theme plain
+skinparam defaultTextAlignment center
+skinparam activityBorderColor #333333
+skinparam activityBackgroundColor #E3F2FD
+skinparam noteBorderColor #FF5722
+skinparam noteBackgroundColor #FFEBEE
+
+title OrchestrPay Payment Processing - BPMN Saga Orchestration
+
+start
+
+:Получить запрос на платёж;
+note right
+  **Событие**: PaymentInitiated
+  Пользователь инициирует платёж
+end note
+
+:Создать запись платежа
+(CREATE_PAYMENT);
+note right
+  Состояние: CREATED
+  Компенсация: CANCEL_PAYMENT
+end note
+
+if (Создание успешно?) then (yes)
+
+  :Зарезервировать средства
+  (RESERVE_FUNDS);
+  note right
+    Состояние: FUNDS_RESERVED
+    Компенсация: RELEASE_FUNDS
+  end note
+
+  if (Резервирование успешно?) then (yes)
+
+    :Списать средства со счёта клиента
+    (DEBIT_CUSTOMER);
+    note right
+      Состояние: FUNDS_DEBITED
+      Компенсация: REFUND_CUSTOMER
+    end note
+
+    if (Списание успешно?) then (yes)
+
+      :Отправить запрос в FraudCheck
+      (REQUEST_FRAUD_CHECK);
+      note right
+        Состояние: FRAUD_CHECK_PENDING
+        Повторяемая транзакция
+      end note
+
+      repeat
+        :Ожидать ответ от FraudCheck
+        (AWAIT_FRAUD_DECISION);
+
+        if (Ответ получен до cut-off?) then (yes)
+
+          if (Результат FraudCheck?) then (APPROVED)
+            #LightGreen:FraudCheck одобрил;
+            note right: Состояние: FRAUD_CHECK_APPROVED
+            break
+
+          elseif (DECLINED) then
+            #Pink:FraudCheck отклонил;
+            note right: Состояние: FRAUD_CHECK_DECLINED
+
+            :Уведомить систему безопасности
+            (NOTIFY_SECURITY);
+            note right: Состояние: SECURITY_NOTIFIED
+
+            :Вернуть средства клиенту
+            (REFUND_CUSTOMER);
+            note right
+              Состояние: REFUNDING → REFUNDED
+              Компенсационная транзакция
+            end note
+
+            if (Возврат успешен?) then (yes)
+              :Отправить уведомление об отклонении
+              (SEND_FAILURE_NOTIFICATION);
+
+              :Отменить платёж
+              (CANCEL_PAYMENT);
+
+              stop
+              note right
+                Финальное состояние:
+                **COMPLETED_DECLINED**
+              end note
+
+            else (no)
+              #Red:Критическая ошибка:
+              возврат не удался;
+
+              stop
+              note right
+                Финальное состояние:
+                **MANUAL_INTERVENTION_REQUIRED**
+                Требуется вмешательство
+                службы поддержки
+              end note
+            endif
+
+          else (MANUAL_REVIEW)
+            #LightYellow:Требуется ручная проверка;
+            note right
+              Состояние: MANUAL_REVIEW_REQUIRED
+            end note
+
+            :Передать на ручную проверку
+            (PROCESS_MANUAL_REVIEW);
+
+            :Ожидать решение оператора
+            (до 20 минут);
+
+            if (Решение получено за 20 мин?) then (yes)
+
+              if (Решение оператора?) then (APPROVED)
+                #LightGreen:Оператор одобрил;
+                note right: ManualReviewApproved
+                break
+
+              else (DECLINED)
+                #Pink:Оператор отклонил;
+                note right: ManualReviewDeclined
+
+                :Уведомить систему безопасности
+                (NOTIFY_SECURITY);
+
+                :Вернуть средства клиенту
+                (REFUND_CUSTOMER);
+
+                if (Возврат успешен?) then (yes)
+                  :Отправить уведомление об отклонении
+                  (SEND_FAILURE_NOTIFICATION);
+
+                  :Отменить платёж
+                  (CANCEL_PAYMENT);
+
+                  stop
+                  note right
+                    Финальное состояние:
+                    **COMPLETED_DECLINED**
+                  end note
+
+                else (no)
+                  #Red:Критическая ошибка;
+                  stop
+                  note right
+                    **MANUAL_INTERVENTION_REQUIRED**
+                  end note
+                endif
+              endif
+
+            else (no - timeout 20 min)
+              #Orange:Cut-off time истёк
+              Автоматическое одобрение;
+              note right
+                ManualReviewCutOffExpired
+                По умолчанию одобряем
+              end note
+              break
+            endif
+          endif
+
+        else (no - timeout)
+          #Orange:Cut-off time истёк
+          Автоматическое одобрение;
+          note right
+            CutOffTimeExpired
+            FraudCheck не ответил вовремя
+          end note
+          break
+        endif
+
+      repeat while (Retry?) is (yes)
+
+      ' === PIVOT POINT - ТОЧКА НЕВОЗВРАТА ===
+
+      note right
+        ════════════════════════════════
+        **PIVOT POINT**
+        **Точка невозврата**
+        После этого момента компенсация
+        через возврат НЕВОЗМОЖНА
+        ════════════════════════════════
+      end note
+
+      #LightGreen:Перевести средства контрагенту
+      (CREDIT_COUNTERPARTY);
+      note right
+        Состояние: COUNTERPARTY_CREDITED
+        **НЕОБРАТИМАЯ ТРАНЗАКЦИЯ**
+        После этой операции откат невозможен
+      end note
+
+      if (Перевод контрагенту успешен?) then (yes)
+
+        ' После Pivot Point только retry, без компенсации
+        repeat
+          :Отправить уведомление об успехе
+          (SEND_SUCCESS_NOTIFICATION);
+
+          if (Уведомление отправлено?) then (yes)
+            break
+          else (no)
+            #Orange:Retry отправки уведомления;
+            note right
+              После Pivot Point
+              только повторные попытки
+            end note
+          endif
+        repeat while (Retry?) is (yes)
+
+        :Завершить платёж;
+
+        stop
+        note right
+          Финальное состояние:
+          **COMPLETED_SUCCESS**
+          Платёж успешно проведён
+        end note
+
+      else (no - сбой перевода)
+        ' Сбой ДО фактического перевода
+        #Pink:Не удалось перевести контрагенту;
+        note right
+          Сбой произошёл до фактического
+          перевода средств
+        end note
+
+        :Вернуть средства клиенту
+        (REFUND_CUSTOMER);
+
+        if (Возврат успешен?) then (yes)
+          :Отправить уведомление о сбое
+          (SEND_FAILURE_NOTIFICATION);
+
+          :Отменить платёж
+          (CANCEL_PAYMENT);
+
+          stop
+          note right
+            Финальное состояние:
+            **COMPLETED_DECLINED**
+          end note
+
+        else (no)
+          #Red:Критическая ошибка;
+          stop
+          note right
+            **MANUAL_INTERVENTION_REQUIRED**
+          end note
+        endif
+      endif
+
+    else (no - сбой списания)
+      #Pink:Не удалось списать средства;
+
+      :Разблокировать средства
+      (RELEASE_FUNDS);
+
+      :Отменить платёж
+      (CANCEL_PAYMENT);
+
+      stop
+      note right
+        Финальное состояние:
+        **COMPLETED_CANCELLED**
+      end note
+    endif
+
+  else (no - сбой резервирования)
+    #Pink:Не удалось зарезервировать средства;
+
+    :Отменить платёж
+    (CANCEL_PAYMENT);
+
+    stop
+    note right
+      Финальное состояние:
+      **COMPLETED_CANCELLED**
+    end note
+  endif
+
+else (no - сбой создания)
+  #Pink:Не удалось создать платёж;
+
+  stop
+  note right
+    Платёж не создан
+    Операция прервана
+  end note
+endif
+
+legend right
+  |<#LightGreen> Цвет |= Значение |
+  |<#LightGreen> Зелёный | Успешный путь |
+  |<#Pink> Розовый | Ошибка/Отклонение |
+  |<#Orange> Оранжевый | Retry/Timeout |
+  |<#Red> Красный | Критическая ошибка |
+  |<#LightYellow> Жёлтый | Ручная проверка |
+
+  **Типы транзакций:**
+  • Компенсируемая - можно откатить
+  • Повторяемая - можно повторить
+  • Необратимая - откат невозможен (Pivot Point)
+
+  **Финальные состояния:**
+  • COMPLETED_SUCCESS - успешно
+  • COMPLETED_DECLINED - отклонено
+  • COMPLETED_CANCELLED - отменено
+  • MANUAL_INTERVENTION_REQUIRED - требуется ручное вмешательство
+endlegend
+
+@enduml
