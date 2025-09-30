@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                   xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                   xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                   xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                   id="Definitions_1"
+                   targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <bpmn:process id="PaymentSagaProcess" name="Payment Saga Process" isExecutable="true">
+
+    <!-- Start Event -->
+    <bpmn:startEvent id="StartEvent_PaymentInitiated" name="Payment Initiated">
+      <bpmn:outgoing>Flow_ToCreatePayment</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Task: Create Payment -->
+    <bpmn:serviceTask id="Task_CreatePayment" name="Create Payment">
+      <bpmn:incoming>Flow_ToCreatePayment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToReserveFunds</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Task: Reserve Funds -->
+    <bpmn:serviceTask id="Task_ReserveFunds" name="Reserve Funds">
+      <bpmn:incoming>Flow_ToReserveFunds</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToDebitCustomer</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Task: Debit Customer -->
+    <bpmn:serviceTask id="Task_DebitCustomer" name="Debit Customer">
+      <bpmn:incoming>Flow_ToDebitCustomer</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToRequestFraudCheck</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Task: Request Fraud Check -->
+    <bpmn:serviceTask id="Task_RequestFraudCheck" name="Request Fraud Check">
+      <bpmn:incoming>Flow_ToRequestFraudCheck</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToAwaitFraudDecision</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Task: Await Fraud Decision with Boundary Timer -->
+    <bpmn:receiveTask id="Task_AwaitFraudDecision" name="Await Fraud Decision">
+      <bpmn:incoming>Flow_ToAwaitFraudDecision</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToFraudCheckGateway</bpmn:outgoing>
+    </bpmn:receiveTask>
+
+    <!-- Boundary Timer Event: Cut-off Time -->
+    <bpmn:boundaryEvent id="BoundaryEvent_CutOffTimer" name="Cut-off Time Expired"
+                        attachedToRef="Task_AwaitFraudDecision" cancelActivity="true">
+      <bpmn:timerEventDefinition />
+      <bpmn:outgoing>Flow_ToCutOffApproval</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+
+    <!-- Exclusive Gateway: Fraud Check Result -->
+    <bpmn:exclusiveGateway id="Gateway_FraudCheckResult" name="Fraud Check Result?">
+      <bpmn:incoming>Flow_ToFraudCheckGateway</bpmn:incoming>
+      <bpmn:incoming>Flow_ToCutOffApproval</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToApproved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToDeclined</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToManualReview</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- Manual Review Sub-process -->
+    <bpmn:subProcess id="SubProcess_ManualReview" name="Manual Review Process">
+      <bpmn:incoming>Flow_ToManualReview</bpmn:incoming>
+      <bpmn:outgoing>Flow_FromManualReview</bpmn:outgoing>
+
+      <bpmn:startEvent id="StartEvent_ManualReview">
+        <bpmn:outgoing>Flow_ToProcessManualReview</bpmn:outgoing>
+      </bpmn:startEvent>
+
+      <bpmn:userTask id="Task_ProcessManualReview" name="Process Manual Review">
+        <bpmn:incoming>Flow_ToProcessManualReview</bpmn:incoming>
+        <bpmn:outgoing>Flow_ToManualDecisionGateway</bpmn:outgoing>
+      </bpmn:userTask>
+
+      <!-- Boundary Timer: 20 minutes for manual review -->
+      <bpmn:boundaryEvent id="BoundaryEvent_ManualReviewTimer" name="20 Minutes Timeout"
+                          attachedToRef="Task_ProcessManualReview" cancelActivity="true">
+        <bpmn:timerEventDefinition />
+        <bpmn:outgoing>Flow_ToManualCutOff</bpmn:outgoing>
+      </bpmn:boundaryEvent>
+
+      <bpmn:exclusiveGateway id="Gateway_ManualDecision" name="Manual Decision?">
+        <bpmn:incoming>Flow_ToManualDecisionGateway</bpmn:incoming>
+        <bpmn:incoming>Flow_ToManualCutOff</bpmn:incoming>
+        <bpmn:outgoing>Flow_ToManualApproved</bpmn:outgoing>
+        <bpmn:outgoing>Flow_ToManualDeclined</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+
+      <bpmn:endEvent id="EndEvent_ManualReviewApproved" name="Approved">
+        <bpmn:incoming>Flow_ToManualApproved</bpmn:incoming>
+      </bpmn:endEvent>
+
+      <bpmn:endEvent id="EndEvent_ManualReviewDeclined" name="Declined">
+        <bpmn:incoming>Flow_ToManualDeclined</bpmn:incoming>
+      </bpmn:endEvent>
+
+      <bpmn:sequenceFlow id="Flow_ToProcessManualReview"
+                         sourceRef="StartEvent_ManualReview"
+                         targetRef="Task_ProcessManualReview"/>
+      <bpmn:sequenceFlow id="Flow_ToManualDecisionGateway"
+                         sourceRef="Task_ProcessManualReview"
+                         targetRef="Gateway_ManualDecision"/>
+      <bpmn:sequenceFlow id="Flow_ToManualCutOff"
+                         sourceRef="BoundaryEvent_ManualReviewTimer"
+                         targetRef="Gateway_ManualDecision"/>
+      <bpmn:sequenceFlow id="Flow_ToManualApproved" name="Approved"
+                         sourceRef="Gateway_ManualDecision"
+                         targetRef="EndEvent_ManualReviewApproved"/>
+      <bpmn:sequenceFlow id="Flow_ToManualDeclined" name="Declined"
+                         sourceRef="Gateway_ManualDecision"
+                         targetRef="EndEvent_ManualReviewDeclined"/>
+    </bpmn:subProcess>
+
+    <!-- Gateway after Manual Review -->
+    <bpmn:exclusiveGateway id="Gateway_AfterManualReview">
+      <bpmn:incoming>Flow_FromManualReview</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToApprovedFromManual</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToDeclinedFromManual</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- === PIVOT POINT === -->
+    <!-- Task: Credit Counterparty (Pivot Point - Irreversible) -->
+    <bpmn:serviceTask id="Task_CreditCounterparty" name="Credit Counterparty ⚠️ PIVOT POINT">
+      <bpmn:incoming>Flow_ToApproved</bpmn:incoming>
+      <bpmn:incoming>Flow_ToApprovedFromManual</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToSendSuccessNotification</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Task: Send Success Notification (with retry) -->
+    <bpmn:serviceTask id="Task_SendSuccessNotification" name="Send Success Notification">
+      <bpmn:incoming>Flow_ToSendSuccessNotification</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToSuccessEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- End Event: Success -->
+    <bpmn:endEvent id="EndEvent_Success" name="Payment Completed Successfully">
+      <bpmn:incoming>Flow_ToSuccessEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- === COMPENSATION FLOW === -->
+
+    <!-- Task: Notify Security -->
+    <bpmn:serviceTask id="Task_NotifySecurity" name="Notify Security">
+      <bpmn:incoming>Flow_ToDeclined</bpmn:incoming>
+      <bpmn:incoming>Flow_ToDeclinedFromManual</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToRefundCustomer</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Task: Refund Customer (Compensation) -->
+    <bpmn:serviceTask id="Task_RefundCustomer" name="Refund Customer">
+      <bpmn:incoming>Flow_ToRefundCustomer</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToRefundCheck</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Gateway: Check Refund Success -->
+    <bpmn:exclusiveGateway id="Gateway_RefundCheck" name="Refund Success?">
+      <bpmn:incoming>Flow_ToRefundCheck</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToSendFailureNotification</bpmn:outgoing>
+      <bpmn:outgoing>Flow_ToManualIntervention</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- Task: Send Failure Notification -->
+    <bpmn:serviceTask id="Task_SendFailureNotification" name="Send Failure Notification">
+      <bpmn:incoming>Flow_ToSendFailureNotification</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToCancelPayment</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Task: Cancel Payment -->
+    <bpmn:serviceTask id="Task_CancelPayment" name="Cancel Payment">
+      <bpmn:incoming>Flow_ToCancelPayment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToDeclinedEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- End Event: Declined -->
+    <bpmn:endEvent id="EndEvent_Declined" name="Payment Declined">
+      <bpmn:incoming>Flow_ToDeclinedEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- End Event: Manual Intervention Required -->
+    <bpmn:endEvent id="EndEvent_ManualIntervention" name="Manual Intervention Required">
+      <bpmn:incoming>Flow_ToManualIntervention</bpmn:incoming>
+      <bpmn:errorEventDefinition />
+    </bpmn:endEvent>
+
+    <!-- Sequence Flows -->
+    <bpmn:sequenceFlow id="Flow_ToCreatePayment" sourceRef="StartEvent_PaymentInitiated" targetRef="Task_CreatePayment"/>
+    <bpmn:sequenceFlow id="Flow_ToReserveFunds" sourceRef="Task_CreatePayment" targetRef="Task_ReserveFunds"/>
+    <bpmn:sequenceFlow id="Flow_ToDebitCustomer" sourceRef="Task_ReserveFunds" targetRef="Task_DebitCustomer"/>
+    <bpmn:sequenceFlow id="Flow_ToRequestFraudCheck" sourceRef="Task_DebitCustomer" targetRef="Task_RequestFraudCheck"/>
+    <bpmn:sequenceFlow id="Flow_ToAwaitFraudDecision" sourceRef="Task_RequestFraudCheck" targetRef="Task_AwaitFraudDecision"/>
+    <bpmn:sequenceFlow id="Flow_ToFraudCheckGateway" sourceRef="Task_AwaitFraudDecision" targetRef="Gateway_FraudCheckResult"/>
+    <bpmn:sequenceFlow id="Flow_ToCutOffApproval" sourceRef="BoundaryEvent_CutOffTimer" targetRef="Gateway_FraudCheckResult"/>
+
+    <bpmn:sequenceFlow id="Flow_ToApproved" name="Approved" sourceRef="Gateway_FraudCheckResult" targetRef="Task_CreditCounterparty"/>
+    <bpmn:sequenceFlow id="Flow_ToDeclined" name="Declined" sourceRef="Gateway_FraudCheckResult" targetRef="Task_NotifySecurity"/>
+    <bpmn:sequenceFlow id="Flow_ToManualReview" name="Manual Review" sourceRef="Gateway_FraudCheckResult" targetRef="SubProcess_ManualReview"/>
+
+    <bpmn:sequenceFlow id="Flow_FromManualReview" sourceRef="SubProcess_ManualReview" targetRef="Gateway_AfterManualReview"/>
+    <bpmn:sequenceFlow id="Flow_ToApprovedFromManual" name="Approved" sourceRef="Gateway_AfterManualReview" targetRef="Task_CreditCounterparty"/>
+    <bpmn:sequenceFlow id="Flow_ToDeclinedFromManual" name="Declined" sourceRef="Gateway_AfterManualReview" targetRef="Task_NotifySecurity"/>
+
+    <bpmn:sequenceFlow id="Flow_ToSendSuccessNotification" sourceRef="Task_CreditCounterparty" targetRef="Task_SendSuccessNotification"/>
+    <bpmn:sequenceFlow id="Flow_ToSuccessEnd" sourceRef="Task_SendSuccessNotification" targetRef="EndEvent_Success"/>
+
+    <bpmn:sequenceFlow id="Flow_ToRefundCustomer" sourceRef="Task_NotifySecurity" targetRef="Task_RefundCustomer"/>
+    <bpmn:sequenceFlow id="Flow_ToRefundCheck" sourceRef="Task_RefundCustomer" targetRef="Gateway_RefundCheck"/>
+    <bpmn:sequenceFlow id="Flow_ToSendFailureNotification" name="Success" sourceRef="Gateway_RefundCheck" targetRef="Task_SendFailureNotification"/>
+    <bpmn:sequenceFlow id="Flow_ToManualIntervention" name="Failed" sourceRef="Gateway_RefundCheck" targetRef="EndEvent_ManualIntervention"/>
+    <bpmn:sequenceFlow id="Flow_ToCancelPayment" sourceRef="Task_SendFailureNotification" targetRef="Task_CancelPayment"/>
+    <bpmn:sequenceFlow id="Flow_ToDeclinedEnd" sourceRef="Task_CancelPayment" targetRef="EndEvent_Declined"/>
+
+    <!-- Error Boundary Events for Compensation -->
+    <bpmn:boundaryEvent id="BoundaryEvent_CreatePaymentError" attachedToRef="Task_CreatePayment">
+      <bpmn:errorEventDefinition />
+      <bpmn:outgoing>Flow_ToErrorEnd</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+
+    <bpmn:boundaryEvent id="BoundaryEvent_ReserveFundsError" attachedToRef="Task_ReserveFunds">
+      <bpmn:errorEventDefinition />
+      <bpmn:outgoing>Flow_ToCancelFromReserve</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+
+    <bpmn:boundaryEvent id="BoundaryEvent_DebitError" attachedToRef="Task_DebitCustomer">
+      <bpmn:errorEventDefinition />
+      <bpmn:outgoing>Flow_ToReleaseFunds</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+
+    <bpmn:serviceTask id="Task_ReleaseFunds" name="Release Funds">
+      <bpmn:incoming>Flow_ToReleaseFunds</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToCancelFromRelease</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_CancelPaymentFromError" name="Cancel Payment">
+      <bpmn:incoming>Flow_ToCancelFromReserve</bpmn:incoming>
+      <bpmn:incoming>Flow_ToCancelFromRelease</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToCancelledEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="EndEvent_Cancelled" name="Payment Cancelled">
+      <bpmn:incoming>Flow_ToCancelledEnd</bpmn:incoming>
+      <bpmn:incoming>Flow_ToErrorEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_ToErrorEnd" sourceRef="BoundaryEvent_CreatePaymentError" targetRef="EndEvent_Cancelled"/>
+    <bpmn:sequenceFlow id="Flow_ToCancelFromReserve" sourceRef="BoundaryEvent_ReserveFundsError" targetRef="Task_CancelPaymentFromError"/>
+    <bpmn:sequenceFlow id="Flow_ToReleaseFunds" sourceRef="BoundaryEvent_DebitError" targetRef="Task_ReleaseFunds"/>
+    <bpmn:sequenceFlow id="Flow_ToCancelFromRelease" sourceRef="Task_ReleaseFunds" targetRef="Task_CancelPaymentFromError"/>
+    <bpmn:sequenceFlow id="Flow_ToCancelledEnd" sourceRef="Task_CancelPaymentFromError" targetRef="EndEvent_Cancelled"/>
+
+  </bpmn:process>
+
+</bpmn:definitions>
